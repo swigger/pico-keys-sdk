@@ -17,6 +17,7 @@
 
 #include "file.h"
 #include "pico_keys.h"
+#include "remote_presence.h"
 #include <string.h>
 #include <stdio.h>
 #include "asn1.h"
@@ -284,6 +285,9 @@ void scan_flash() {
     initialize_flash(false); //soft initialization
     uint32_t r1 = (uint32_t)(*(uintptr_t *) flash_read(end_rom_pool)), r2 = (uint32_t)(*(uintptr_t *) flash_read(end_rom_pool + sizeof(uintptr_t)));
     if ((r1 == 0xffffffff || r1 == 0xefefefef) && (r2 == 0xffffffff || r2 == 0xefefefef)) {
+        // Relay/fault boot may read existing USB settings, but must not format
+        // an empty or damaged dormant credential directory as a side effect.
+        if (!remote_device_local_allowed()) return;
         printf("First initialization (or corrupted!)\n");
         uint8_t empty[sizeof(uintptr_t) * 2 + sizeof(uint32_t)];
         memset(empty, 0, sizeof(empty));

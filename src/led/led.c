@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "pico_keys.h"
+#include "remote_presence.h"
 #ifdef PICO_PLATFORM
 #include "bsp/board.h"
 #elif defined(ESP_PLATFORM)
@@ -45,14 +46,47 @@ void led_blinking_task() {
     static uint32_t stop_ms = 0;
     static uint32_t last_led_update_ms = 0;
     static uint8_t led_state = false;
+    uint32_t mode = led_mode;
+    // CTAP CBOR work can retain MODE_MOUNTED; the authenticated remote wait
+    // state, rather than the APDU processing mode, drives this indication.
+    if (!remote_device_local_allowed() && remote_device_keepalive() == 2) {
+        mode = MODE_REMOTE_WAIT;
+    }
+#ifdef LED_ACTIVITY_ONLY
+    static uint32_t previous_mode = UINT32_MAX;
+    // Only waits for the user light the LED: pairing and settings writes blink blue, a local
+    // presence wait green, a relay wait red. Everything else (host polling,
+    // APDUs from the OS smart-card stack, CTAP processing) stays dark. When a
+    // wait ends, send an explicit off frame so the last pixel cannot stick.
+    if (remote_presence_pairing() || remote_device_setup_active()) {
+        mode = MODE_PAIR_WAIT;
+    } else if (mode == MODE_REMOTE_WAIT || (mode == MODE_BUTTON && !remote_device_local_allowed())) {
+        mode = MODE_REMOTE_WAIT;
+    } else if (mode == MODE_BUTTON) {
+        mode = MODE_LOCAL_WAIT;
+    } else {
+        mode = MODE_ALWAYS_OFF;
+    }
+    if (mode == MODE_ALWAYS_OFF) {
+        if (previous_mode != mode) led_driver->set_color(LED_COLOR_OFF, 0, 0);
+        previous_mode = mode;
+        return;
+    }
+    if (previous_mode != mode) {
+        start_ms = board_millis();
+        stop_ms = start_ms + ((mode & LED_ON_MASK) >> LED_ON_SHIFT);
+        led_state = true;
+        previous_mode = mode;
+    }
+#endif
     uint8_t state = led_state;
 #ifdef PICO_DEFAULT_LED_PIN_INVERTED
     state = !state;
 #endif
-    uint32_t led_brightness = (led_mode & LED_BTNESS_MASK) >> LED_BTNESS_SHIFT;
-    uint32_t led_color = (led_mode & LED_COLOR_MASK) >> LED_COLOR_SHIFT;
-    uint32_t led_off = (led_mode & LED_OFF_MASK) >> LED_OFF_SHIFT;
-    uint32_t led_on = (led_mode & LED_ON_MASK) >> LED_ON_SHIFT;
+    uint32_t led_brightness = (mode & LED_BTNESS_MASK) >> LED_BTNESS_SHIFT;
+    uint32_t led_color = (mode & LED_COLOR_MASK) >> LED_COLOR_SHIFT;
+    uint32_t led_off = (mode & LED_OFF_MASK) >> LED_OFF_SHIFT;
+    uint32_t led_on = (mode & LED_ON_MASK) >> LED_ON_SHIFT;
 
     float progress = 0;
 
@@ -63,7 +97,7 @@ void led_blinking_task() {
     if (!state) {
         progress = 1. - progress;
     }
-    if (phy_data.opts & PHY_OPT_LED_STEADY) {
+    if ((phy_data.opts & PHY_OPT_LED_STEADY) && mode != MODE_REMOTE_WAIT && mode != MODE_LOCAL_WAIT && mode != MODE_PAIR_WAIT) {
         progress = 1;
     }
 

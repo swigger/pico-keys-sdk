@@ -30,6 +30,7 @@ static portMUX_TYPE mutex = portMUX_INITIALIZER_UNLOCKED;
 #include "pico_keys_version.h"
 #include "apdu.h"
 #include "usb.h"
+#include "remote_presence.h"
 
 extern void init_fido();
 bool is_nk = false;
@@ -112,6 +113,11 @@ uint16_t (*hid_get_report_cb)(uint8_t, uint8_t, hid_report_type_t, uint8_t *, ui
 // Return zero will cause the stack to STALL request
 
 uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen) {
+#ifdef ENABLE_REMOTE_PRESENCE
+    if (itf == ITF_HID_REMOTE) {
+        return report_type == HID_REPORT_TYPE_FEATURE ? remote_presence_get(report_id, buffer, reqlen) : 0;
+    }
+#endif
     // TODO not Implemented
     (void) itf;
     (void) report_id;
@@ -251,12 +257,31 @@ void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, uint16_
 }
 
 int driver_write_hid(uint8_t itf, const uint8_t *buffer, uint16_t buffer_size) {
+#ifdef ESP_PLATFORM
+    taskENTER_CRITICAL(&mutex);
+#endif
     if (last_write_result[itf] == WRITE_PENDING) {
+#ifdef ESP_PLATFORM
+        taskEXIT_CRITICAL(&mutex);
+#endif
         return 0;
     }
+    // TinyUSB runs in a higher-priority task on ESP32 and can invoke the
+    // completion callback before tud_hid_n_report returns. Publish PENDING
+    // first, and never overwrite a completion after a successful submission.
+    last_write_result[itf] = WRITE_PENDING;
+#ifdef ESP_PLATFORM
+    taskEXIT_CRITICAL(&mutex);
+#endif
     bool r = tud_hid_n_report(itf, 0, buffer, buffer_size);
-    last_write_result[itf] = r ? WRITE_PENDING : WRITE_FAILED;
-    if (last_write_result[itf] == WRITE_FAILED) {
+    if (!r) {
+#ifdef ESP_PLATFORM
+        taskENTER_CRITICAL(&mutex);
+#endif
+        last_write_result[itf] = WRITE_FAILED;
+#ifdef ESP_PLATFORM
+        taskEXIT_CRITICAL(&mutex);
+#endif
         return 0;
     }
 #ifdef ENABLE_EMULATION
@@ -270,6 +295,12 @@ int (*hid_set_report_cb)(uint8_t, uint8_t, hid_report_type_t, uint8_t const *, u
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 
 void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) {
+#ifdef ENABLE_REMOTE_PRESENCE
+    if (itf == ITF_HID_REMOTE) {
+        if (report_type == HID_REPORT_TYPE_FEATURE) remote_presence_set(report_id, buffer, bufsize);
+        return;
+    }
+#endif
     // This example doesn't use multiple report and report ID
     (void) itf;
     (void) report_id;
@@ -324,6 +355,26 @@ extern void *cbor_thread(void *);
 int driver_process_usb_packet_hid(uint16_t read) {
     int apdu_sent = 0;
     if (read >= 5) {
+        // Inspect CANCEL before driver_init_hid(), which clears the response
+        // buffer and would race the cancelled worker's final CBOR reply.
+        const CTAPHID_FRAME *incoming = (const CTAPHID_FRAME *)
+            (hid_rx[ITF_HID_CTAP].buffer + hid_rx[ITF_HID_CTAP].r_ptr);
+        if (FRAME_TYPE(incoming) == TYPE_INIT) remote_device_trace(2, incoming->init.cmd, MSG_LEN(incoming));
+        if (FRAME_TYPE(incoming) == TYPE_INIT && incoming->init.cmd == CTAPHID_CANCEL) {
+            if (MSG_LEN(incoming) == 0 && incoming->cid == last_req.cid && is_busy()) {
+#ifdef ESP_PLATFORM
+                __atomic_store_n(&cancel_button, true, __ATOMIC_RELEASE);
+#else
+                cancel_button = true;
+#endif
+            }
+            hid_rx[ITF_HID_CTAP].r_ptr += 64;
+            if (hid_rx[ITF_HID_CTAP].r_ptr >= hid_rx[ITF_HID_CTAP].w_ptr) {
+                hid_rx[ITF_HID_CTAP].r_ptr = hid_rx[ITF_HID_CTAP].w_ptr = 0;
+            }
+            last_packet_time = 0;
+            return 0;
+        }
         driver_init_hid();
 
         hid_rx[ITF_HID_CTAP].r_ptr += 64;
@@ -385,9 +436,20 @@ int driver_process_usb_packet_hid(uint16_t read) {
             }
         }
         if (ctap_req->init.cmd == CTAPHID_INIT) {
+            // INIT aborts a pending transaction. Signal the worker first: card_exit()
+            // waits for it, and relay/button waits can otherwise block USB for minutes.
+            if (is_busy()) {
+#ifdef ESP_PLATFORM
+                __atomic_store_n(&cancel_button, true, __ATOMIC_RELEASE);
+#else
+                cancel_button = true;
+#endif
+            }
             card_exit();
             hid_tx[ITF_HID_CTAP].r_ptr = hid_tx[ITF_HID_CTAP].w_ptr = 0;
-            init_fido();
+            // Channel setup must not scan, initialize or migrate dormant
+            // local credentials when relay mode (or a storage fault) is active.
+            if (remote_device_local_allowed()) init_fido();
             CTAPHID_INIT_REQ *req = (CTAPHID_INIT_REQ *) ctap_req->init.data;
             CTAPHID_INIT_RESP *resp = (CTAPHID_INIT_RESP *) ctap_resp->init.data;
             memcpy(resp->nonce, req->nonce, sizeof(resp->nonce));
@@ -396,6 +458,7 @@ int driver_process_usb_packet_hid(uint16_t read) {
             resp->versionMajor = get_version_major ? get_version_major() : PICO_KEYS_SDK_VERSION_MAJOR;
             resp->versionMinor = get_version_minor ? get_version_minor() : PICO_KEYS_SDK_VERSION_MINOR;
             resp->capFlags = CAPFLAG_WINK | CAPFLAG_CBOR;
+            if (!remote_device_local_allowed()) resp->capFlags |= 0x08; // CTAPHID_CAPABILITY_NMSG
 
             ctap_resp->cid = ctap_req->cid;
             ctap_resp->init.cmd = CTAPHID_INIT;
@@ -482,14 +545,16 @@ int driver_process_usb_packet_hid(uint16_t read) {
         else if ((last_cmd == CTAPHID_MSG || last_cmd == CTAPHID_OTP) &&
                  (msg_packet.len == 0 ||
                   (msg_packet.len == msg_packet.current_len && msg_packet.len > 0))) {
-            if (last_cmd == CTAPHID_OTP) {
-                is_nk = true;
+            if (remote_device_local_allowed()) {
+                if (last_cmd == CTAPHID_OTP) {
+                    is_nk = true;
 #ifdef ENABLE_OATH_APP
-                select_app(oath_aid + 1, oath_aid[0]);
+                    select_app(oath_aid + 1, oath_aid[0]);
 #endif
-            }
-            else {
-                select_app(u2f_aid + 1, u2f_aid[0]);
+                }
+                else {
+                    select_app(u2f_aid + 1, u2f_aid[0]);
+                }
             }
 
             thread_type = 1;
@@ -507,7 +572,7 @@ int driver_process_usb_packet_hid(uint16_t read) {
         else if ((last_cmd == CTAPHID_CBOR || last_cmd >= CTAPHID_VENDOR_FIRST) &&
                  (msg_packet.len == 0 || (msg_packet.len == msg_packet.current_len && msg_packet.len > 0))) {
             thread_type = 2;
-            select_app(fido_aid + 1, fido_aid[0]);
+            if (remote_device_local_allowed()) select_app(fido_aid + 1, fido_aid[0]);
             if (msg_packet.current_len == msg_packet.len && msg_packet.len > 0) {
                 apdu_sent = cbor_process(last_cmd, msg_packet.data, msg_packet.len);
             }
@@ -520,13 +585,6 @@ int driver_process_usb_packet_hid(uint16_t read) {
                 return ctap_error((uint8_t)(-apdu_sent));
             }
             send_keepalive();
-        }
-        else if (ctap_req->init.cmd == CTAPHID_CANCEL) {
-            ctap_error(0x2D);
-            msg_packet.len = msg_packet.current_len = 0;
-            last_packet_time = 0;
-            cancel_button = true;
-            hid_tx[ITF_HID_CTAP].r_ptr = hid_tx[ITF_HID_CTAP].w_ptr = 0;
         }
         else {
             if (msg_packet.len == 0) {
@@ -558,7 +616,7 @@ void send_keepalive() {
     resp->cid = ctap_req->cid;
     resp->init.cmd = CTAPHID_KEEPALIVE;
     resp->init.bcntl = 1;
-    resp->init.data[0] = is_req_button_pending() ? 2 : 1;
+    resp->init.data[0] = is_req_button_pending() ? 2 : remote_device_keepalive();
     //send_buffer_size[ITF_HID_CTAP] = 0;
     driver_write_hid(ITF_HID_CTAP, (const uint8_t *)resp, 64);
 }

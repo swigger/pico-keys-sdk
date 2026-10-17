@@ -21,6 +21,11 @@
 #include "mbedtls/ecp.h"
 #include "mbedtls/md.h"
 
+// ESP-IDF's Wi-Fi supplicant exports unrelated aes_encrypt/aes_decrypt symbols.
+// Keep the SDK source API while giving its helpers unambiguous linker names.
+#define aes_encrypt pico_keys_aes_encrypt
+#define aes_decrypt pico_keys_aes_decrypt
+
 #define PICO_KEYS_KEY_RSA                 0x000f // It is a mask
 #define PICO_KEYS_KEY_RSA_1K              0x0001
 #define PICO_KEYS_KEY_RSA_2K              0x0002
