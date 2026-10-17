@@ -30,6 +30,7 @@ static portMUX_TYPE mutex = portMUX_INITIALIZER_UNLOCKED;
 #include "pico_keys_version.h"
 #include "apdu.h"
 #include "usb.h"
+#include "remote_presence.h"
 
 extern void init_fido();
 bool is_nk = false;
@@ -112,6 +113,11 @@ uint16_t (*hid_get_report_cb)(uint8_t, uint8_t, hid_report_type_t, uint8_t *, ui
 // Return zero will cause the stack to STALL request
 
 uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen) {
+#ifdef ENABLE_REMOTE_PRESENCE
+    if (itf == ITF_HID_REMOTE) {
+        return report_type == HID_REPORT_TYPE_FEATURE ? remote_presence_get(report_id, buffer, reqlen) : 0;
+    }
+#endif
     // TODO not Implemented
     (void) itf;
     (void) report_id;
@@ -270,6 +276,12 @@ int (*hid_set_report_cb)(uint8_t, uint8_t, hid_report_type_t, uint8_t const *, u
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 
 void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize) {
+#ifdef ENABLE_REMOTE_PRESENCE
+    if (itf == ITF_HID_REMOTE) {
+        if (report_type == HID_REPORT_TYPE_FEATURE) remote_presence_set(report_id, buffer, bufsize);
+        return;
+    }
+#endif
     // This example doesn't use multiple report and report ID
     (void) itf;
     (void) report_id;
@@ -324,6 +336,21 @@ extern void *cbor_thread(void *);
 int driver_process_usb_packet_hid(uint16_t read) {
     int apdu_sent = 0;
     if (read >= 5) {
+        // Inspect CANCEL before driver_init_hid(), which clears the response
+        // buffer and would race the cancelled worker's final CBOR reply.
+        const CTAPHID_FRAME *incoming = (const CTAPHID_FRAME *)
+            (hid_rx[ITF_HID_CTAP].buffer + hid_rx[ITF_HID_CTAP].r_ptr);
+        if (FRAME_TYPE(incoming) == TYPE_INIT && incoming->init.cmd == CTAPHID_CANCEL) {
+            if (MSG_LEN(incoming) == 0 && incoming->cid == last_req.cid && is_busy()) {
+                cancel_button = true;
+            }
+            hid_rx[ITF_HID_CTAP].r_ptr += 64;
+            if (hid_rx[ITF_HID_CTAP].r_ptr >= hid_rx[ITF_HID_CTAP].w_ptr) {
+                hid_rx[ITF_HID_CTAP].r_ptr = hid_rx[ITF_HID_CTAP].w_ptr = 0;
+            }
+            last_packet_time = 0;
+            return 0;
+        }
         driver_init_hid();
 
         hid_rx[ITF_HID_CTAP].r_ptr += 64;
@@ -520,13 +547,6 @@ int driver_process_usb_packet_hid(uint16_t read) {
                 return ctap_error((uint8_t)(-apdu_sent));
             }
             send_keepalive();
-        }
-        else if (ctap_req->init.cmd == CTAPHID_CANCEL) {
-            ctap_error(0x2D);
-            msg_packet.len = msg_packet.current_len = 0;
-            last_packet_time = 0;
-            cancel_button = true;
-            hid_tx[ITF_HID_CTAP].r_ptr = hid_tx[ITF_HID_CTAP].w_ptr = 0;
         }
         else {
             if (msg_packet.len == 0) {

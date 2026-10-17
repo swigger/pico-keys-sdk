@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "pico_keys.h"
+#include "remote_presence.h"
 
 #if !defined(ENABLE_EMULATION)
 #include "tusb.h"
@@ -197,6 +198,10 @@ bool button_pressed_state = false;
 uint32_t button_pressed_time = 0;
 uint8_t button_press = 0;
 bool wait_button() {
+#ifdef ESP_PLATFORM
+    // This board has a BOOT button: physical presence must never auto-approve.
+    uint32_t button_timeout = 120000;
+#else
     /* Disabled by default. As LED may not be properly configured,
        it will not be possible to indicate button press unless it
        is commissioned. */
@@ -207,25 +212,37 @@ bool wait_button() {
     if (button_timeout == 0) {
         return false;
     }
+#endif
     uint32_t start_button = board_millis();
     bool timeout = false;
     cancel_button = false;
     uint32_t led_mode = led_get_mode();
     led_set_mode(MODE_BUTTON);
     req_button_pending = true;
+    bool remote_confirmed = false;
+    remote_presence_begin();
     while (picok_board_button_read() == false && cancel_button == false) {
         execute_tasks();
-        //sleep_ms(10);
+        if (remote_presence_take()) {
+            remote_confirmed = true;
+            break;
+        }
+#ifdef ESP_PLATFORM
+        vTaskDelay(pdMS_TO_TICKS(10));
+#endif
         if (start_button + button_timeout < board_millis()) { /* timeout */
             timeout = true;
             break;
         }
     }
-    if (!timeout) {
+    if (!timeout && !remote_confirmed) {
+        uint32_t release_start = board_millis();
         while (picok_board_button_read() == true && cancel_button == false) {
             execute_tasks();
-            //sleep_ms(10);
-            if (start_button + 15000 < board_millis()) { /* timeout */
+#ifdef ESP_PLATFORM
+            vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+            if (board_millis() - release_start > 15000) { /* timeout */
                 timeout = true;
                 break;
             }
@@ -233,6 +250,7 @@ bool wait_button() {
     }
     led_set_mode(led_mode);
     req_button_pending = false;
+    remote_presence_end();
     return timeout || cancel_button;
 }
 
@@ -297,6 +315,7 @@ void core0_loop() {
         execute_tasks();
         hwrng_task();
         do_flash();
+        remote_presence_service();
 #ifndef ENABLE_EMULATION
         if (button_pressed_cb && board_millis() > 1000 && !is_busy()) { // wait 1 second to boot up
             bool current_button_state = picok_board_button_read();
@@ -378,6 +397,8 @@ int main(void) {
     gpio_pad_select_gpio(BOOT_PIN);
     gpio_set_direction(BOOT_PIN, GPIO_MODE_INPUT);
     gpio_pulldown_dis(BOOT_PIN);
+    gpio_pullup_en(BOOT_PIN);
+    remote_presence_init();
 
     tusb_cfg.string_descriptor[3] = pico_serial_str;
     if (phy_data.usb_product_present) {
@@ -392,7 +413,7 @@ int main(void) {
     }
     tusb_cfg.configuration_descriptor = desc_config;
 
-    tinyusb_driver_install(&tusb_cfg);
+    ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
 #else
     tusb_init();
 #endif
@@ -403,7 +424,7 @@ int main(void) {
 #endif
 
 #ifdef ESP_PLATFORM
-    xTaskCreatePinnedToCore(core0_loop, "core0", 4096*ITF_TOTAL*2, NULL, CONFIG_TINYUSB_TASK_PRIORITY - 1, &hcore0, ESP32_CORE0);
+    xTaskCreatePinnedToCore(core0_loop, "core0", ESP32_APP_TASK_STACK_SIZE, NULL, CONFIG_TINYUSB_TASK_PRIORITY - 1, &hcore0, ESP32_CORE0);
 #else
     core0_loop();
 #endif

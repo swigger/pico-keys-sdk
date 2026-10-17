@@ -53,6 +53,9 @@ pthread_t hcore0, hcore1;
     uint8_t ITF_HID_CTAP = ITF_INVALID, ITF_HID_KB = ITF_INVALID;
     uint8_t ITF_HID = ITF_INVALID, ITF_KEYBOARD = ITF_INVALID;
     uint8_t ITF_HID_TOTAL = 0;
+#ifdef ENABLE_REMOTE_PRESENCE
+    uint8_t ITF_HID_REMOTE = ITF_INVALID, ITF_REMOTE = ITF_INVALID;
+#endif
     extern void hid_init();
 #endif
 
@@ -99,6 +102,10 @@ void usb_init()
     }
 #endif
 
+#ifndef ENABLE_OTP_APP
+    enabled_usb_itf &= ~PHY_USB_ITF_KB;
+#endif
+
 #ifdef USB_ITF_HID
     ITF_HID_TOTAL = 0;
 #endif
@@ -114,6 +121,11 @@ void usb_init()
         string_desc_itf[ITF_TOTAL - 1] = string_desc_arr[5];
 #endif
     }
+#ifdef ENABLE_REMOTE_PRESENCE
+    ITF_HID_REMOTE = ITF_HID_TOTAL++;
+    ITF_REMOTE = ITF_TOTAL++;
+    string_desc_itf[ITF_TOTAL - 1] = "Remote confirmation";
+#else
     if (enabled_usb_itf & PHY_USB_ITF_KB) {
         ITF_HID_KB = ITF_HID_TOTAL++;
         ITF_KEYBOARD = ITF_TOTAL++;
@@ -121,6 +133,7 @@ void usb_init()
         string_desc_itf[ITF_TOTAL - 1] = string_desc_arr[6];
 #endif
     }
+#endif
 #endif
 #ifdef USB_ITF_CCID
     if (enabled_usb_itf & PHY_USB_ITF_CCID) {

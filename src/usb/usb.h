@@ -53,6 +53,9 @@ enum { ITF_INVALID = 0xFF };
     extern uint8_t ITF_HID_CTAP, ITF_HID_KB;
     extern uint8_t ITF_HID, ITF_KEYBOARD;
     extern uint8_t ITF_HID_TOTAL;
+#ifdef ENABLE_REMOTE_PRESENCE
+    extern uint8_t ITF_HID_REMOTE, ITF_REMOTE;
+#endif
 #endif
 
 #ifdef USB_ITF_CCID

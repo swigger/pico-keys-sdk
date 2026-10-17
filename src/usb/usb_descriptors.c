@@ -35,7 +35,11 @@
 #endif
 
 #if defined(PICO_PLATFORM) || defined(ESP_PLATFORM)
+#ifdef USB_ITF_WCID
 #define USB_BCD   0x0210
+#else
+#define USB_BCD   0x0200
+#endif
 #else
 #define USB_BCD   0x0110
 #endif
@@ -104,6 +108,28 @@ uint8_t const desc_hid_report[] = {
 uint8_t const desc_hid_report_kb[] = {
     TUD_HID_REPORT_DESC_KEYBOARD(HID_USAGE_PAGE(HID_USAGE_DESKTOP_KEYBOARD), HID_USAGE_MIN(0), HID_USAGE_MAX_N(255,2), HID_LOGICAL_MIN(0), HID_LOGICAL_MAX_N(255, 2), HID_REPORT_COUNT(8), HID_REPORT_SIZE(8), HID_FEATURE( HID_DATA | HID_VARIABLE | HID_ABSOLUTE),)
 };
+#ifdef ENABLE_REMOTE_PRESENCE
+// A separate vendor collection stays accessible while Windows owns FIDO HID.
+uint8_t const desc_hid_report_remote[] = {
+    0x06, 0x31, 0xff, 0x09, 0x01, 0xa1, 0x01,
+    0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x3f,
+    0x85, 1, 0x09, 1, 0xb1, 0x02,
+    0x85, 2, 0x09, 1, 0xb1, 0x02,
+    0x85, 3, 0x09, 1, 0xb1, 0x02,
+    0x85, 4, 0x09, 1, 0xb1, 0x02,
+    0x85, 5, 0x09, 1, 0xb1, 0x02,
+    0x85, 6, 0x09, 1, 0xb1, 0x02,
+    0x85, 7, 0x09, 1, 0xb1, 0x02,
+    0x85, 8, 0x09, 1, 0xb1, 0x02,
+    0x85, 9, 0x09, 1, 0xb1, 0x02,
+    0x85, 10, 0x09, 1, 0xb1, 0x02,
+    0x85, 11, 0x09, 1, 0xb1, 0x02,
+    0x85, 12, 0x09, 1, 0xb1, 0x02,
+    0x85, 13, 0x09, 1, 0xb1, 0x02,
+    0x85, 14, 0x09, 1, 0xb1, 0x02,
+    0x85, 15, 0x09, 1, 0x81, 0x02, 0xc0
+};
+#endif
 #endif
 
 enum {
@@ -153,6 +179,11 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t itf) {
     if (itf == ITF_HID_CTAP) {
         return desc_hid_report;
     }
+#ifdef ENABLE_REMOTE_PRESENCE
+    else if (itf == ITF_HID_REMOTE) {
+        return desc_hid_report_remote;
+    }
+#endif
     else if (itf == ITF_HID_KB) {
         return desc_hid_report_kb;
     }
@@ -171,12 +202,21 @@ void usb_desc_setup() {
         memcpy(p, desc, sizeof(desc));
         p += sizeof(desc);
     }
+#ifdef ENABLE_REMOTE_PRESENCE
+    if (ITF_REMOTE != ITF_INVALID) {
+        TUSB_DESC_TOTAL_LEN += TUD_HID_DESC_LEN;
+        const uint8_t desc_remote[] = { TUD_HID_DESCRIPTOR(ITF_REMOTE, 6, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report_remote), (uint8_t)TUSB_DIR_IN_MASK | EPNUM_HID_KB, 64, 10) };
+        memcpy(p, desc_remote, sizeof(desc_remote));
+        p += sizeof(desc_remote);
+    }
+#else
     if (ITF_KEYBOARD != ITF_INVALID) {
         TUSB_DESC_TOTAL_LEN += TUD_HID_DESC_LEN;
         const uint8_t desc_kb[] = { TUD_HID_DESCRIPTOR(ITF_KEYBOARD, ITF_KEYBOARD + 5, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report_kb), (uint8_t)TUSB_DIR_IN_MASK | EPNUM_HID_KB, 16, 5) };
         memcpy(p, desc_kb, sizeof(desc_kb));
         p += sizeof(desc_kb);
     }
+#endif
 #endif
 #ifdef USB_ITF_CCID
     if (ITF_CCID != ITF_INVALID) {
@@ -324,7 +364,11 @@ char const *string_desc_arr [] = {
     "11223344",                    // 3: Serials, should use chip ID
     "Config"                       // 4: Vendor Interfaces
     , "HID Interface"
+#ifdef ENABLE_REMOTE_PRESENCE
+    , "Remote confirmation"
+#else
     , "HID Keyboard Interface"
+#endif
     , "CCID OTP FIDO Interface"
     , "WebCCID Interface"
 };

@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "pico_keys.h"
+#include "remote_presence.h"
 #ifdef PICO_PLATFORM
 #include "bsp/board.h"
 #elif defined(ESP_PLATFORM)
@@ -45,14 +46,36 @@ void led_blinking_task() {
     static uint32_t stop_ms = 0;
     static uint32_t last_led_update_ms = 0;
     static uint8_t led_state = false;
+    uint32_t mode = led_mode;
+#ifdef LED_ACTIVITY_ONLY
+    static uint32_t previous_mode = UINT32_MAX;
+    if (remote_presence_pairing()) {
+        mode = MODE_BUTTON;
+    } else if (mode == MODE_MOUNTED || mode == MODE_NOT_MOUNTED || mode == MODE_SUSPENDED) {
+        mode = MODE_ALWAYS_OFF;
+    }
+    // Do not count background HID status polling as activity. When an operation
+    // ends, send an explicit off frame so the last illuminated pixel cannot stick.
+    if (mode == MODE_ALWAYS_OFF) {
+        if (previous_mode != mode) led_driver->set_color(LED_COLOR_OFF, 0, 0);
+        previous_mode = mode;
+        return;
+    }
+    if (previous_mode != mode) {
+        start_ms = board_millis();
+        stop_ms = start_ms + ((mode & LED_ON_MASK) >> LED_ON_SHIFT);
+        led_state = true;
+        previous_mode = mode;
+    }
+#endif
     uint8_t state = led_state;
 #ifdef PICO_DEFAULT_LED_PIN_INVERTED
     state = !state;
 #endif
-    uint32_t led_brightness = (led_mode & LED_BTNESS_MASK) >> LED_BTNESS_SHIFT;
-    uint32_t led_color = (led_mode & LED_COLOR_MASK) >> LED_COLOR_SHIFT;
-    uint32_t led_off = (led_mode & LED_OFF_MASK) >> LED_OFF_SHIFT;
-    uint32_t led_on = (led_mode & LED_ON_MASK) >> LED_ON_SHIFT;
+    uint32_t led_brightness = (mode & LED_BTNESS_MASK) >> LED_BTNESS_SHIFT;
+    uint32_t led_color = (mode & LED_COLOR_MASK) >> LED_COLOR_SHIFT;
+    uint32_t led_off = (mode & LED_OFF_MASK) >> LED_OFF_SHIFT;
+    uint32_t led_on = (mode & LED_ON_MASK) >> LED_ON_SHIFT;
 
     float progress = 0;
 

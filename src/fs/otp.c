@@ -295,7 +295,7 @@ void init_otp_files() {
     otp_migrate_chaff();
 #endif
 
-#if defined(PICO_RP2350) || defined(ESP_PLATFORM)
+#if defined(PICO_RP2350) || (defined(ESP_PLATFORM) && !defined(PICO_NO_EFUSE_KEYS))
     otp_ret_t ret = 0;
     uint16_t write_otp[2] = {0xFFFF, 0xFFFF};
     if (OTP_EMTPY(OTP_KEY_1, 32)) {
