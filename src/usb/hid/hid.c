@@ -342,7 +342,11 @@ int driver_process_usb_packet_hid(uint16_t read) {
             (hid_rx[ITF_HID_CTAP].buffer + hid_rx[ITF_HID_CTAP].r_ptr);
         if (FRAME_TYPE(incoming) == TYPE_INIT && incoming->init.cmd == CTAPHID_CANCEL) {
             if (MSG_LEN(incoming) == 0 && incoming->cid == last_req.cid && is_busy()) {
+#ifdef ESP_PLATFORM
+                __atomic_store_n(&cancel_button, true, __ATOMIC_RELEASE);
+#else
                 cancel_button = true;
+#endif
             }
             hid_rx[ITF_HID_CTAP].r_ptr += 64;
             if (hid_rx[ITF_HID_CTAP].r_ptr >= hid_rx[ITF_HID_CTAP].w_ptr) {
@@ -414,7 +418,9 @@ int driver_process_usb_packet_hid(uint16_t read) {
         if (ctap_req->init.cmd == CTAPHID_INIT) {
             card_exit();
             hid_tx[ITF_HID_CTAP].r_ptr = hid_tx[ITF_HID_CTAP].w_ptr = 0;
-            init_fido();
+            // Channel setup must not scan, initialize or migrate dormant
+            // local credentials when relay mode (or a storage fault) is active.
+            if (remote_device_local_allowed()) init_fido();
             CTAPHID_INIT_REQ *req = (CTAPHID_INIT_REQ *) ctap_req->init.data;
             CTAPHID_INIT_RESP *resp = (CTAPHID_INIT_RESP *) ctap_resp->init.data;
             memcpy(resp->nonce, req->nonce, sizeof(resp->nonce));
@@ -423,6 +429,7 @@ int driver_process_usb_packet_hid(uint16_t read) {
             resp->versionMajor = get_version_major ? get_version_major() : PICO_KEYS_SDK_VERSION_MAJOR;
             resp->versionMinor = get_version_minor ? get_version_minor() : PICO_KEYS_SDK_VERSION_MINOR;
             resp->capFlags = CAPFLAG_WINK | CAPFLAG_CBOR;
+            if (!remote_device_local_allowed()) resp->capFlags |= 0x08; // CTAPHID_CAPABILITY_NMSG
 
             ctap_resp->cid = ctap_req->cid;
             ctap_resp->init.cmd = CTAPHID_INIT;
@@ -509,14 +516,16 @@ int driver_process_usb_packet_hid(uint16_t read) {
         else if ((last_cmd == CTAPHID_MSG || last_cmd == CTAPHID_OTP) &&
                  (msg_packet.len == 0 ||
                   (msg_packet.len == msg_packet.current_len && msg_packet.len > 0))) {
-            if (last_cmd == CTAPHID_OTP) {
-                is_nk = true;
+            if (remote_device_local_allowed()) {
+                if (last_cmd == CTAPHID_OTP) {
+                    is_nk = true;
 #ifdef ENABLE_OATH_APP
-                select_app(oath_aid + 1, oath_aid[0]);
+                    select_app(oath_aid + 1, oath_aid[0]);
 #endif
-            }
-            else {
-                select_app(u2f_aid + 1, u2f_aid[0]);
+                }
+                else {
+                    select_app(u2f_aid + 1, u2f_aid[0]);
+                }
             }
 
             thread_type = 1;
@@ -534,7 +543,7 @@ int driver_process_usb_packet_hid(uint16_t read) {
         else if ((last_cmd == CTAPHID_CBOR || last_cmd >= CTAPHID_VENDOR_FIRST) &&
                  (msg_packet.len == 0 || (msg_packet.len == msg_packet.current_len && msg_packet.len > 0))) {
             thread_type = 2;
-            select_app(fido_aid + 1, fido_aid[0]);
+            if (remote_device_local_allowed()) select_app(fido_aid + 1, fido_aid[0]);
             if (msg_packet.current_len == msg_packet.len && msg_packet.len > 0) {
                 apdu_sent = cbor_process(last_cmd, msg_packet.data, msg_packet.len);
             }
@@ -578,7 +587,7 @@ void send_keepalive() {
     resp->cid = ctap_req->cid;
     resp->init.cmd = CTAPHID_KEEPALIVE;
     resp->init.bcntl = 1;
-    resp->init.data[0] = is_req_button_pending() ? 2 : 1;
+    resp->init.data[0] = is_req_button_pending() ? 2 : remote_device_keepalive();
     //send_buffer_size[ITF_HID_CTAP] = 0;
     driver_write_hid(ITF_HID_CTAP, (const uint8_t *)resp, 64);
 }

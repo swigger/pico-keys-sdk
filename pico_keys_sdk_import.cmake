@@ -327,9 +327,11 @@ set(PICO_KEYS_SOURCES ${PICO_KEYS_SOURCES}
     ${CMAKE_CURRENT_LIST_DIR}/src/fs/flash.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fs/low_flash.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fs/otp.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/fs/esp_otp_read.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fs/phy.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rng/random.c
     ${CMAKE_CURRENT_LIST_DIR}/src/rng/hwrng.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/rng/esp_random_source.c
     ${CMAKE_CURRENT_LIST_DIR}/src/eac.c
     ${CMAKE_CURRENT_LIST_DIR}/src/crypto_utils.c
     ${CMAKE_CURRENT_LIST_DIR}/src/asn1.c

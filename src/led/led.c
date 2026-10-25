@@ -47,6 +47,11 @@ void led_blinking_task() {
     static uint32_t last_led_update_ms = 0;
     static uint8_t led_state = false;
     uint32_t mode = led_mode;
+    // CTAP CBOR work can retain MODE_MOUNTED; the authenticated remote wait
+    // state, rather than the APDU processing mode, drives this indication.
+    if (!remote_device_local_allowed() && remote_device_keepalive() == 2) {
+        mode = MODE_REMOTE_WAIT;
+    }
 #ifdef LED_ACTIVITY_ONLY
     static uint32_t previous_mode = UINT32_MAX;
     if (remote_presence_pairing()) {
@@ -86,7 +91,7 @@ void led_blinking_task() {
     if (!state) {
         progress = 1. - progress;
     }
-    if (phy_data.opts & PHY_OPT_LED_STEADY) {
+    if ((phy_data.opts & PHY_OPT_LED_STEADY) && mode != MODE_REMOTE_WAIT) {
         progress = 1;
     }
 

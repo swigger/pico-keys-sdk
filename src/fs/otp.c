@@ -87,6 +87,7 @@ static void otp_lock_page(uint8_t page) {
 #endif
 
 #ifdef ESP_PLATFORM
+#include "esp_otp_read.h"
 
 uint8_t _otp_key_1[32] = {0};
 uint8_t _otp_key_2[32] = {0};
@@ -126,6 +127,7 @@ typedef esp_err_t otp_ret_t;
 #endif
 
 bool otp_is_secure_boot_enabled(uint8_t *bootkey) {
+    (void)bootkey;
 #ifdef PICO_RP2350
     const uint8_t *crit1 = otp_buffer(OTP_DATA_CRIT1_ROW);
     if ((crit1[0] & (1 << OTP_DATA_CRIT1_SECURE_BOOT_ENABLE_LSB)) == 0) {
@@ -180,6 +182,8 @@ bool otp_is_secure_boot_locked() {
 }
 
 int otp_enable_secure_boot(uint8_t bootkey, bool secure_lock) {
+    (void)bootkey;
+    (void)secure_lock;
     int ret = 0;
 #ifdef PICO_RP2350
     alignas(2) uint8_t BOOTKEY[] = "\xe1\xd1\x6b\xa7\x64\xab\xd7\x12\xd4\xef\x6e\x3e\xdd\x74\x4e\xd5\x63\x8c\x26\xb\x77\x1c\xf9\x81\x51\x11\xb\xaf\xac\x9b\xc8\x71";
@@ -289,7 +293,8 @@ void otp_migrate_chaff() {
 }
 #endif
 
-void init_otp_files() {
+bool init_otp_files(void) {
+    bool ok = true;
 
 #ifdef PICO_RP2350
     otp_migrate_chaff();
@@ -302,8 +307,10 @@ void init_otp_files() {
         uint8_t mkek[32] = {0};
         random_gen(NULL, mkek, sizeof(mkek));
         ret = OTP_WRITE(OTP_KEY_1, mkek, sizeof(mkek));
+        mbedtls_platform_zeroize(mkek, sizeof(mkek));
         if (ret != 0) {
             printf("Error writing OTP key 1 [%d]\n", ret);
+            ok = false;
         }
 #ifdef PICO_RP2350
         otp_chaff(OTP_KEY_1, 32);
@@ -326,6 +333,7 @@ void init_otp_files() {
         ret = OTP_WRITE(OTP_KEY_2, pkey, olen);
         if (ret != 0) {
             printf("Error writing OTP key 2 [%d]\n", ret);
+            ok = false;
         }
         mbedtls_platform_zeroize(pkey, sizeof(pkey));
 #ifdef PICO_RP2350
@@ -343,10 +351,12 @@ void init_otp_files() {
             ret = esp_efuse_set_key_dis_write(write_otp[i]);
             if (ret != ESP_OK) {
                 printf("Error setting OTP key %d to read only [%d]\n", i, ret);
+                ok = false;
             }
             ret = esp_efuse_set_keypurpose_dis_write(write_otp[i]);
             if (ret != ESP_OK) {
                 printf("Error setting OTP key %d purpose to read only [%d]\n", i, ret);
+                ok = false;
             }
 #endif
         }
@@ -358,4 +368,17 @@ void init_otp_files() {
     otp_key_1 = _otp1;
     otp_key_2 = _otp2;
 #endif
+#ifdef ESP_PLATFORM
+    /* PICO_NO_EFUSE_KEYS controls provisioning, never existing-key reads. */
+    otp_key_1 = otp_key_2 = NULL;
+    uint8_t present = 0;
+    if (!ok || !pico_esp_read_storage_keys(_otp_key_1, _otp_key_2, &present)) {
+        mbedtls_platform_zeroize(_otp_key_1, sizeof(_otp_key_1));
+        mbedtls_platform_zeroize(_otp_key_2, sizeof(_otp_key_2));
+        return false;
+    }
+    if (present & 1) otp_key_1 = _otp_key_1;
+    if (present & 2) otp_key_2 = _otp_key_2;
+#endif
+    return ok;
 }

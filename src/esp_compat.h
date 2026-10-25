@@ -46,7 +46,10 @@ static inline void task_wrapper(void *arg) {
 #define ESP32_APP_TASK_STACK_SIZE 32768
 #define multicore_launch_func_core1(func) xTaskCreatePinnedToCore(task_wrapper, "core1", ESP32_APP_TASK_STACK_SIZE, (void *)func, CONFIG_TINYUSB_TASK_PRIORITY - 2, &hcore1, ESP32_CORE1)
 #define multicore_reset_core1() do { if (hcore1) { eTaskState e = eTaskGetState(hcore1); if (e <= eSuspended) { vTaskDelete(hcore1); }} }while(0)
-#define sleep_ms(a) vTaskDelay(a / portTICK_PERIOD_MS)
+static inline void sleep_ms(uint32_t ms) {
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    vTaskDelay(ms && !ticks ? 1 : ticks);
+}
 static inline uint32_t board_millis(void) {
     return ( ( ((uint64_t) xTaskGetTickCount()) * 1000) / configTICK_RATE_HZ );
 }

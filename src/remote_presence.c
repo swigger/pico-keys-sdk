@@ -3,7 +3,7 @@
 #include <string.h>
 #include "pico_keys.h"
 #include "usb.h"
-#include "esp_random.h"
+#include "pico_random.h"
 #include "driver/gpio.h"
 #include "mbedtls/ecdsa.h"
 #include "mbedtls/sha256.h"
@@ -17,6 +17,17 @@ static portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
 static nvs_handle_t storage;
 static bool storage_ready;
 static uint8_t keys[KEY_SLOTS][65], ids[KEY_SLOTS][16];
+__attribute__((weak)) void remote_device_init(void) {}
+__attribute__((weak)) void remote_device_service(void) {}
+__attribute__((weak)) bool remote_device_setup_active(void) { return false; }
+__attribute__((weak)) bool remote_device_local_allowed(void) { return true; }
+__attribute__((weak)) uint8_t remote_device_keepalive(void) { return 1; }
+__attribute__((weak)) uint16_t remote_device_get(uint8_t report, uint8_t *b, uint16_t len) { return 0; }
+__attribute__((weak)) void remote_device_set(uint8_t report, const uint8_t *b, uint16_t len) {}
+__attribute__((weak)) int remote_device_cbor(uint8_t cmd, const uint8_t *data, size_t length,
+                                            uint8_t *response, size_t capacity, uint16_t *response_length) {
+    return 0x30;
+}
 static struct {
     bool valid, pending, approved, have_r, candidate, selected;
     uint8_t operation, result, attempts;
@@ -96,8 +107,9 @@ void remote_presence_init(void) {
     storage_ready = true;
 }
 void remote_presence_service(void) {
+    remote_device_service();
     uint8_t phase, pub[65], action, id[16], tx[16];
-    bool busy = is_busy();
+    bool busy = is_busy() || remote_device_setup_active();
     bool pressed = gpio_get_level(GPIO_NUM_0) == 0;
     uint32_t now = board_millis();
     portENTER_CRITICAL(&state_lock);
@@ -218,7 +230,7 @@ void remote_presence_context(uint8_t op, const uint8_t rp_hash[32], const uint8_
 }
 void remote_presence_begin(void) {
     uint8_t nonce[32];
-    esp_fill_random(nonce, 32);
+    picok_random_fill(nonce, 32);
     portENTER_CRITICAL(&state_lock);
     if (pair_active()) {
         pairing.phase = 9;
@@ -319,7 +331,33 @@ bool remote_presence_take(void) {
     portEXIT_CRITICAL(&state_lock);
     return approved;
 }
+bool remote_presence_verify_digest(const uint8_t id[16], const uint8_t digest[32], const uint8_t sig[64]) {
+    uint8_t pub[65];
+    portENTER_CRITICAL(&state_lock);
+    int slot = storage_ready ? find_id(id) : -1;
+    if (slot >= 0) memcpy(pub, keys[slot], 65);
+    portEXIT_CRITICAL(&state_lock);
+    if (slot < 0) return false;
+    mbedtls_ecp_group g;
+    mbedtls_ecp_point q;
+    mbedtls_mpi r, s;
+    mbedtls_ecp_group_init(&g); mbedtls_ecp_point_init(&q);
+    mbedtls_mpi_init(&r); mbedtls_mpi_init(&s);
+    int result = mbedtls_ecp_group_load(&g, MBEDTLS_ECP_DP_SECP256R1);
+    if (!result) result = mbedtls_ecp_point_read_binary(&g, &q, pub, 65);
+    if (!result) result = mbedtls_mpi_read_binary(&r, sig, 32);
+    if (!result) result = mbedtls_mpi_read_binary(&s, sig + 32, 32);
+    if (!result) result = mbedtls_ecdsa_verify(&g, digest, 32, &q, &r, &s);
+    mbedtls_mpi_free(&r); mbedtls_mpi_free(&s);
+    mbedtls_ecp_point_free(&q); mbedtls_ecp_group_free(&g);
+    portENTER_CRITICAL(&state_lock);
+    slot = find_id(id);
+    bool trusted = storage_ready && slot >= 0 && !memcmp(pub, keys[slot], 65);
+    portEXIT_CRITICAL(&state_lock);
+    return !result && trusted;
+}
 uint16_t remote_presence_get(uint8_t report, uint8_t *b, uint16_t len) {
+    if (report >= 16) return remote_device_get(report, b, len);
     if (len < 63)
         return 0;
     memset(b, 0, 63);
@@ -367,6 +405,7 @@ uint16_t remote_presence_get(uint8_t report, uint8_t *b, uint16_t len) {
     return 63;
 }
 void remote_presence_set(uint8_t report, const uint8_t *b, uint16_t len) {
+    if (report >= 16) { remote_device_set(report, b, len); return; }
     if (len != 63)
         return;
     portENTER_CRITICAL(&state_lock);

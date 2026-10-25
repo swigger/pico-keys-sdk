@@ -33,7 +33,25 @@ bool is_chaining = false;
 uint8_t chain_buf[2038];
 uint8_t *chain_ptr = NULL;
 
+#include "remote_presence.h"
+
+static void discard_local_apdu_state(void) {
+    is_chaining = false;
+    chain_ptr = chain_buf;
+    memset(chain_buf, 0, sizeof(chain_buf));
+    rdata_gr = apdu.rdata;
+    rdata_bk = 0;
+    apdu.nc = apdu.ne = 0;
+    apdu.data = NULL;
+    res_APDU_size = 0;
+}
+
 int process_apdu() {
+    // All local applets share this boundary, including U2F and management.
+    if (!remote_device_local_allowed()) {
+        discard_local_apdu_state();
+        return set_res_sw(0x69, 0x85);
+    }
     led_set_mode(MODE_PROCESSING);
     if (CLA(apdu) & 0x10) {
         if (!is_chaining) {
@@ -69,6 +87,14 @@ int process_apdu() {
 
 uint16_t apdu_process(uint8_t itf, const uint8_t *buffer, uint16_t buffer_size) {
     apdu.header = (uint8_t *) buffer;
+    // GET RESPONSE is served here, before the worker's process_apdu() gate.
+    // In relay/fault mode do not parse it or expose any saved local response;
+    // schedule the normal worker so it returns only the blocked status word.
+    if (!remote_device_local_allowed()) {
+        discard_local_apdu_state();
+        apdu.sw = 0;
+        return 1;
+    }
     apdu.nc = apdu.ne = 0;
     if (buffer_size == 4) {
         apdu.nc = apdu.ne = 0;

@@ -48,7 +48,7 @@
 
 extern void do_flash();
 extern void low_flash_init();
-extern void init_otp_files();
+#include "otp.h"
 
 app_t apps[16];
 uint8_t num_apps = 0;
@@ -317,7 +317,8 @@ void core0_loop() {
         do_flash();
         remote_presence_service();
 #ifndef ENABLE_EMULATION
-        if (button_pressed_cb && board_millis() > 1000 && !is_busy()) { // wait 1 second to boot up
+        if (button_pressed_cb && board_millis() > 1000 && !is_busy() &&
+            remote_device_local_allowed() && !remote_device_setup_active()) {
             bool current_button_state = picok_board_button_read();
             if (current_button_state != button_pressed_state) {
                 if (current_button_state == false) { // unpressed
@@ -376,7 +377,19 @@ int main(void) {
 
     random_init();
 
-    init_otp_files();
+    if (!init_otp_files()) {
+        /* Never scan/initialize credential storage or expose USB using an
+         * unavailable root key or a different fallback key source. */
+        printf("Storage key initialization failed; storage and USB remain stopped.\n");
+        return 1;
+    }
+
+#if defined(ESP_PLATFORM) && !defined(ENABLE_EMULATION)
+    // Establish the immutable mode before scan_flash() can initialize an empty
+    // local directory. These NVS readers do not depend on the FIDO partition.
+    remote_presence_init();
+    remote_device_init();
+#endif
 
     low_flash_init();
 
@@ -398,8 +411,6 @@ int main(void) {
     gpio_set_direction(BOOT_PIN, GPIO_MODE_INPUT);
     gpio_pulldown_dis(BOOT_PIN);
     gpio_pullup_en(BOOT_PIN);
-    remote_presence_init();
-
     tusb_cfg.string_descriptor[3] = pico_serial_str;
     if (phy_data.usb_product_present) {
         tusb_cfg.string_descriptor[2] = phy_data.usb_product;

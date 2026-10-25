@@ -25,9 +25,7 @@
 #include "bsp/board.h"
 #include "pico/rand.h"
 #elif defined(ESP_PLATFORM)
-#include "bootloader_random.h"
-#include "esp_random.h"
-#include "esp_compat.h"
+#include "pico_random.h"
 #else
 #include <stdbool.h>
 #include <stdlib.h>
@@ -35,11 +33,19 @@
 #include "board.h"
 #endif
 
+#ifdef ESP_PLATFORM
+void hwrng_start(void) { picok_random_init(); }
+void *hwrng_task(void) { return NULL; } // ESP callers draw from the locked DRBG on demand.
+void hwrng_init(uint32_t *buf, uint8_t size) { (void)buf; (void)size; picok_random_init(); }
+void hwrng_flush(void) {}
+void hwrng_wait_full(void) {}
+uint32_t hwrng_get(void) { uint32_t value; picok_random_fill(&value, sizeof(value)); return value; }
+#else
 void hwrng_start() {
 #if defined(ENABLE_EMULATION)
     srand(time(0));
 #elif defined(ESP_PLATFORM)
-    bootloader_random_enable();
+    picok_random_init();
 #endif
 }
 
@@ -61,7 +67,7 @@ static int hwrng_mix_process() {
 #if defined(PICO_PLATFORM)
     word = get_rand_64();
 #elif defined(ESP_PLATFORM)
-    esp_fill_random((uint8_t *)&word, sizeof(word));
+    picok_random_fill((uint8_t *)&word, sizeof(word));
 #else
     word = rand();
     word <<= 32;
@@ -183,3 +189,4 @@ void hwrng_wait_full() {
         hwrng_task();
     }
 }
+#endif

@@ -24,16 +24,28 @@
 #include <string.h>
 
 #include "hwrng.h"
+#ifdef ESP_PLATFORM
+#include "pico_random.h"
+#include "mbedtls/platform_util.h"
+#endif
 
 #define RANDOM_BYTES_LENGTH 32
+#ifndef ESP_PLATFORM
 static uint32_t random_word[RANDOM_BYTES_LENGTH / sizeof(uint32_t)];
+#endif
+#define MAX_RANDOM_BUFFER 1024
+static uint32_t return_word[MAX_RANDOM_BUFFER / sizeof(uint32_t)];
 
 void random_init(void) {
+#ifdef ESP_PLATFORM
+    picok_random_init();
+#else
     hwrng_init(random_word, RANDOM_BYTES_LENGTH / sizeof(uint32_t));
 
     for (int i = 0; i < HWRNG_PRE_LOOP; i++) {
         hwrng_get();
     }
+#endif
 }
 
 /*
@@ -41,24 +53,30 @@ void random_init(void) {
  */
 void random_bytes_free(const uint8_t *p) {
     (void) p;
+#ifdef ESP_PLATFORM
+    mbedtls_platform_zeroize(return_word, sizeof(return_word));
+#else
     memset(random_word, 0, RANDOM_BYTES_LENGTH);
     hwrng_flush();
+#endif
 }
 
 /*
  * Return pointer to random 32-byte
  */
-#define MAX_RANDOM_BUFFER 1024
 const uint8_t *random_bytes_get(size_t len) {
     if (len > MAX_RANDOM_BUFFER) {
         return NULL;
     }
-    static uint32_t return_word[MAX_RANDOM_BUFFER / sizeof(uint32_t)];
+#ifdef ESP_PLATFORM
+    picok_random_fill(return_word, len);
+#else
     for (size_t ix = 0; ix < len; ix += RANDOM_BYTES_LENGTH) {
         hwrng_wait_full();
         memcpy(return_word + ix / sizeof(uint32_t), random_word, RANDOM_BYTES_LENGTH);
         random_bytes_free((const uint8_t *) random_word);
     }
+#endif
     return (const uint8_t *) return_word;
 }
 
@@ -66,6 +84,13 @@ const uint8_t *random_bytes_get(size_t len) {
  * Random byte iterator
  */
 int random_gen(void *arg, unsigned char *out, size_t out_len) {
+#ifdef ESP_PLATFORM
+    // Fresh output for every call, including partial requests without a cursor.
+    // Do not reuse a full ring buffer now that idle refill is disabled.
+    if (arg) *(uint8_t *)arg = 0;
+    picok_random_fill(out, out_len);
+    return 0;
+#else
     uint8_t *index_p = (uint8_t *) arg;
     uint8_t index = index_p ? *index_p : 0;
     uint8_t n;
@@ -94,6 +119,7 @@ int random_gen(void *arg, unsigned char *out, size_t out_len) {
     }
 
     return 0;
+#endif
 }
 
 #ifdef ENABLE_PQC
