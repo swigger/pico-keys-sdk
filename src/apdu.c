@@ -57,7 +57,7 @@ int process_apdu() {
         if (!is_chaining) {
             chain_ptr = chain_buf;
         }
-        if (chain_ptr - chain_buf + apdu.nc >= sizeof(chain_buf)) {
+        if ((size_t)(chain_ptr - chain_buf) + apdu.nc >= sizeof(chain_buf)) {
             return SW_CLA_NOT_SUPPORTED();
         }
         memcpy(chain_ptr, apdu.data, apdu.nc);
