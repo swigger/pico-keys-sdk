@@ -54,11 +54,11 @@ void led_blinking_task() {
     }
 #ifdef LED_ACTIVITY_ONLY
     static uint32_t previous_mode = UINT32_MAX;
-    // Only waits for the user light the LED: pairing blinks blue, a local
+    // Only waits for the user light the LED: pairing and settings writes blink blue, a local
     // presence wait green, a relay wait red. Everything else (host polling,
     // APDUs from the OS smart-card stack, CTAP processing) stays dark. When a
     // wait ends, send an explicit off frame so the last pixel cannot stick.
-    if (remote_presence_pairing()) {
+    if (remote_presence_pairing() || remote_device_setup_active()) {
         mode = MODE_PAIR_WAIT;
     } else if (mode == MODE_REMOTE_WAIT || (mode == MODE_BUTTON && !remote_device_local_allowed())) {
         mode = MODE_REMOTE_WAIT;
