@@ -9,6 +9,7 @@
 #include "mbedtls/sha256.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "mbedtls/platform_util.h"
 
 #define AUTH_WINDOW_MS 90000u
 #define PAIR_WINDOW_MS 120000u
@@ -17,6 +18,11 @@ static portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
 static nvs_handle_t storage;
 static bool storage_ready;
 static uint8_t keys[KEY_SLOTS][65], ids[KEY_SLOTS][16];
+// This device's own P-256 key. Generated on the device the first time and never
+// exported; pairing hands the public half to the controller. The relay proves
+// the device to the safe end with it.
+static uint8_t device_secret[32], device_pub[65];
+static bool device_ready;
 __attribute__((weak)) void remote_device_init(void) {}
 __attribute__((weak)) void remote_device_service(void) {}
 __attribute__((weak)) bool remote_device_setup_active(void) { return false; }
@@ -81,11 +87,71 @@ static bool valid_pub(const uint8_t pub[65]) {
     mbedtls_ecp_group_free(&g);
     return !r;
 }
+static int device_rng(void *ctx, unsigned char *out, size_t length) {
+    (void)ctx;
+    picok_random_fill(out, length);
+    return 0;
+}
+static bool device_public(const uint8_t secret[32], uint8_t pub[65]) {
+    mbedtls_ecp_keypair k;
+    mbedtls_ecp_keypair_init(&k);
+    size_t n = 0;
+    int r = mbedtls_ecp_read_key(MBEDTLS_ECP_DP_SECP256R1, &k, secret, 32);
+    if (!r)
+        r = mbedtls_ecp_mul(&k.MBEDTLS_PRIVATE(grp), &k.MBEDTLS_PRIVATE(Q), &k.MBEDTLS_PRIVATE(d),
+                            &k.MBEDTLS_PRIVATE(grp).G, device_rng, NULL);
+    if (!r)
+        r = mbedtls_ecp_point_write_binary(&k.MBEDTLS_PRIVATE(grp), &k.MBEDTLS_PRIVATE(Q),
+                                           MBEDTLS_ECP_PF_UNCOMPRESSED, &n, pub, 65);
+    mbedtls_ecp_keypair_free(&k);
+    return !r && n == 65;
+}
+static void device_key_init(void) {
+    uint8_t secret[32];
+    size_t n = sizeof(secret);
+    esp_err_t err = nvs_get_blob(storage, "device_key", secret, &n);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        mbedtls_ecp_keypair k;
+        mbedtls_ecp_keypair_init(&k);
+        int r = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, &k, device_rng, NULL);
+        if (!r)
+            r = mbedtls_mpi_write_binary(&k.MBEDTLS_PRIVATE(d), secret, 32);
+        mbedtls_ecp_keypair_free(&k);
+        err = r ? ESP_FAIL : nvs_set_blob(storage, "device_key", secret, 32);
+        if (err == ESP_OK)
+            err = nvs_commit(storage);
+        n = 32;
+    }
+    if (err == ESP_OK && n == 32 && device_public(secret, device_pub)) {
+        memcpy(device_secret, secret, 32);
+        device_ready = true;
+    }
+    mbedtls_platform_zeroize(secret, sizeof(secret));
+}
+bool remote_presence_device_sign(const uint8_t digest[32], uint8_t signature[64]) {
+    if (!device_ready)
+        return false;
+    mbedtls_ecp_group g;
+    mbedtls_mpi d, r, s;
+    mbedtls_ecp_group_init(&g);
+    mbedtls_mpi_init(&d); mbedtls_mpi_init(&r); mbedtls_mpi_init(&s);
+    int result = mbedtls_ecp_group_load(&g, MBEDTLS_ECP_DP_SECP256R1);
+    if (!result) result = mbedtls_mpi_read_binary(&d, device_secret, 32);
+    if (!result) result = mbedtls_ecdsa_sign(&g, &r, &s, &d, digest, 32, device_rng, NULL);
+    if (!result) result = mbedtls_mpi_write_binary(&r, signature, 32);
+    if (!result) result = mbedtls_mpi_write_binary(&s, signature + 32, 32);
+    mbedtls_mpi_free(&d); mbedtls_mpi_free(&r); mbedtls_mpi_free(&s);
+    mbedtls_ecp_group_free(&g);
+    if (result)
+        memset(signature, 0, 64);
+    return !result;
+}
 void remote_presence_init(void) {
     // Never erase NVS automatically: it may contain another application's data.
     if (nvs_flash_init() != ESP_OK ||
         nvs_open("remote_presence", NVS_READWRITE, &storage) != ESP_OK)
         return;
+    device_key_init();
     uint8_t loaded[KEY_SLOTS][65] = {0};
     size_t n = sizeof(loaded);
     esp_err_t err = nvs_get_blob(storage, "keys_v2", loaded, &n);
@@ -141,9 +207,9 @@ void remote_presence_service(void) {
             for (int i = 0; i < KEY_SLOTS; i++)
                 if (!keys[i][0])
                     room = true;
-            if (!ok || !storage_ready || (action == 1 && !room) || (action == 2 && slot < 0)) {
+            if (!ok || !storage_ready || !device_ready || (action == 1 && !room) || (action == 2 && slot < 0)) {
                 pairing.phase = 8;
-                pairing.result = !ok ? 2 : !storage_ready ? 5 : action == 2 ? 2 : 4;
+                pairing.result = !ok ? 2 : !storage_ready || !device_ready ? 5 : action == 2 ? 2 : 4;
             } else
                 pairing.phase = 2;
         }
@@ -356,8 +422,22 @@ bool remote_presence_verify_digest(const uint8_t id[16], const uint8_t digest[32
     portEXIT_CRITICAL(&state_lock);
     return !result && trusted;
 }
+bool remote_presence_verify_any(const uint8_t digest[32], const uint8_t sig[64]) {
+    uint8_t list[KEY_SLOTS][16];
+    portENTER_CRITICAL(&state_lock);
+    memcpy(list, ids, sizeof(list));
+    portEXIT_CRITICAL(&state_lock);
+    for (int i = 0; i < KEY_SLOTS; i++) {
+        uint8_t any = 0;
+        for (int j = 0; j < 16; j++)
+            any |= list[i][j];
+        if (any && remote_presence_verify_digest(list[i], digest, sig))
+            return true;
+    }
+    return false;
+}
 uint16_t remote_presence_get(uint8_t report, uint8_t *b, uint16_t len) {
-    if (report >= 16) return remote_device_get(report, b, len);
+    if (report >= 16 && report <= 19) return remote_device_get(report, b, len);
     if (len < 63)
         return 0;
     memset(b, 0, 63);
@@ -384,7 +464,7 @@ uint16_t remote_presence_get(uint8_t report, uint8_t *b, uint16_t len) {
         memcpy(b, "PRP2", 4);
         b[4] = pairing.phase;
         b[5] = pairing.result;
-        b[7] = storage_ready;
+        b[7] = storage_ready && device_ready;
         for (int i = 0; i < KEY_SLOTS; i++)
             if (keys[i][0])
                 b[6]++;
@@ -397,7 +477,11 @@ uint16_t remote_presence_get(uint8_t report, uint8_t *b, uint16_t len) {
         memcpy(b, ids, 48);
     else if (report == 14)
         memcpy(b, ids[3], 16);
-    else {
+    else if (report == 20 || report == 21) {
+        // Device public key X and Y. Public data, read when pairing completes.
+        if (device_ready)
+            memcpy(b, device_pub + (report == 20 ? 1 : 33), 32);
+    } else {
         portEXIT_CRITICAL(&state_lock);
         return 0;
     }
@@ -405,7 +489,7 @@ uint16_t remote_presence_get(uint8_t report, uint8_t *b, uint16_t len) {
     return 63;
 }
 void remote_presence_set(uint8_t report, const uint8_t *b, uint16_t len) {
-    if (report >= 16) { remote_device_set(report, b, len); return; }
+    if (report >= 16 && report <= 19) { remote_device_set(report, b, len); return; }
     if (len != 63)
         return;
     portENTER_CRITICAL(&state_lock);

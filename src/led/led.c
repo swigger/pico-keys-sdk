@@ -54,13 +54,19 @@ void led_blinking_task() {
     }
 #ifdef LED_ACTIVITY_ONLY
     static uint32_t previous_mode = UINT32_MAX;
+    // Only waits for the user light the LED: pairing blinks blue, a local
+    // presence wait green, a relay wait red. Everything else (host polling,
+    // APDUs from the OS smart-card stack, CTAP processing) stays dark. When a
+    // wait ends, send an explicit off frame so the last pixel cannot stick.
     if (remote_presence_pairing()) {
-        mode = MODE_BUTTON;
-    } else if (mode == MODE_MOUNTED || mode == MODE_NOT_MOUNTED || mode == MODE_SUSPENDED) {
+        mode = MODE_PAIR_WAIT;
+    } else if (mode == MODE_REMOTE_WAIT || (mode == MODE_BUTTON && !remote_device_local_allowed())) {
+        mode = MODE_REMOTE_WAIT;
+    } else if (mode == MODE_BUTTON) {
+        mode = MODE_LOCAL_WAIT;
+    } else {
         mode = MODE_ALWAYS_OFF;
     }
-    // Do not count background HID status polling as activity. When an operation
-    // ends, send an explicit off frame so the last illuminated pixel cannot stick.
     if (mode == MODE_ALWAYS_OFF) {
         if (previous_mode != mode) led_driver->set_color(LED_COLOR_OFF, 0, 0);
         previous_mode = mode;
@@ -91,7 +97,7 @@ void led_blinking_task() {
     if (!state) {
         progress = 1. - progress;
     }
-    if ((phy_data.opts & PHY_OPT_LED_STEADY) && mode != MODE_REMOTE_WAIT) {
+    if ((phy_data.opts & PHY_OPT_LED_STEADY) && mode != MODE_REMOTE_WAIT && mode != MODE_LOCAL_WAIT && mode != MODE_PAIR_WAIT) {
         progress = 1;
     }
 

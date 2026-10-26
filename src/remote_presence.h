@@ -16,6 +16,10 @@ bool remote_presence_take(void);
 uint16_t remote_presence_get(uint8_t report_id, uint8_t *buffer, uint16_t len);
 void remote_presence_set(uint8_t report_id, const uint8_t *buffer, uint16_t len);
 bool remote_presence_verify_digest(const uint8_t id[16], const uint8_t digest[32], const uint8_t signature[64]);
+// True if any paired controller key verifies the raw r||s signature.
+bool remote_presence_verify_any(const uint8_t digest[32], const uint8_t signature[64]);
+// Signs with this device's own key (raw r||s). False if the key is unavailable.
+bool remote_presence_device_sign(const uint8_t digest[32], uint8_t signature[64]);
 // Optional application hooks. SDK defaults preserve existing local-only behavior.
 void remote_device_init(void);
 void remote_device_service(void);

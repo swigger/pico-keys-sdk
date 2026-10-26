@@ -2,4 +2,3 @@
 dependencies:
   espressif/esp_tinyusb: "^1.7.6"
   espressif/tinyusb: "~0.17.0"
-  zorxx/neopixel: "1.0.4"
