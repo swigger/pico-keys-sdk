@@ -416,6 +416,15 @@ int driver_process_usb_packet_hid(uint16_t read) {
             }
         }
         if (ctap_req->init.cmd == CTAPHID_INIT) {
+            // INIT aborts a pending transaction. Signal the worker first: card_exit()
+            // waits for it, and relay/button waits can otherwise block USB for minutes.
+            if (is_busy()) {
+#ifdef ESP_PLATFORM
+                __atomic_store_n(&cancel_button, true, __ATOMIC_RELEASE);
+#else
+                cancel_button = true;
+#endif
+            }
             card_exit();
             hid_tx[ITF_HID_CTAP].r_ptr = hid_tx[ITF_HID_CTAP].w_ptr = 0;
             // Channel setup must not scan, initialize or migrate dormant

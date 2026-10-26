@@ -35,8 +35,8 @@ void picok_random_init(void) {
     seeding = false;
     bootloader_random_disable();
     if (err) abort();
-    // SP 800-90A permits up to 2^48 requests between reseeds. Use a stricter
-    // bound below INT_MAX to avoid library counter overflow; reboot on exhaustion.
+    // No reseed after boot (see boot_entropy). SP 800-90A allows 2^48 requests;
+    // picok_random_fill enforces a much stricter 2^24 and aborts (reboots) beyond it.
     mbedtls_ctr_drbg_set_reseed_interval(&generator, INT_MAX);
 }
 
