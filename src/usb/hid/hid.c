@@ -257,12 +257,31 @@ void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, uint16_
 }
 
 int driver_write_hid(uint8_t itf, const uint8_t *buffer, uint16_t buffer_size) {
+#ifdef ESP_PLATFORM
+    taskENTER_CRITICAL(&mutex);
+#endif
     if (last_write_result[itf] == WRITE_PENDING) {
+#ifdef ESP_PLATFORM
+        taskEXIT_CRITICAL(&mutex);
+#endif
         return 0;
     }
+    // TinyUSB runs in a higher-priority task on ESP32 and can invoke the
+    // completion callback before tud_hid_n_report returns. Publish PENDING
+    // first, and never overwrite a completion after a successful submission.
+    last_write_result[itf] = WRITE_PENDING;
+#ifdef ESP_PLATFORM
+    taskEXIT_CRITICAL(&mutex);
+#endif
     bool r = tud_hid_n_report(itf, 0, buffer, buffer_size);
-    last_write_result[itf] = r ? WRITE_PENDING : WRITE_FAILED;
-    if (last_write_result[itf] == WRITE_FAILED) {
+    if (!r) {
+#ifdef ESP_PLATFORM
+        taskENTER_CRITICAL(&mutex);
+#endif
+        last_write_result[itf] = WRITE_FAILED;
+#ifdef ESP_PLATFORM
+        taskEXIT_CRITICAL(&mutex);
+#endif
         return 0;
     }
 #ifdef ENABLE_EMULATION
