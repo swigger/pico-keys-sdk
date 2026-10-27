@@ -447,7 +447,7 @@ bool remote_presence_verify_any(const uint8_t digest[32], const uint8_t sig[64])
     return false;
 }
 uint16_t remote_presence_get(uint8_t report, uint8_t *b, uint16_t len) {
-    if (report >= 16 && report <= 19) return remote_device_get(report, b, len);
+    if ((report >= 16 && report <= 19) || (report >= 22 && report <= 24)) return remote_device_get(report, b, len);
     if (len < 63)
         return 0;
     memset(b, 0, 63);
@@ -499,7 +499,7 @@ uint16_t remote_presence_get(uint8_t report, uint8_t *b, uint16_t len) {
     return 63;
 }
 void remote_presence_set(uint8_t report, const uint8_t *b, uint16_t len) {
-    if (report >= 16 && report <= 19) { remote_device_set(report, b, len); return; }
+    if ((report >= 16 && report <= 19) || (report >= 22 && report <= 24)) { remote_device_set(report, b, len); return; }
     if (len != 63)
         return;
     portENTER_CRITICAL(&state_lock);

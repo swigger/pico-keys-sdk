@@ -8,6 +8,13 @@
 // leaves the device. False if the device key is unavailable.
 bool remote_presence_derive_key(const char *purpose, uint8_t key[32]);
 
+// Development trace hook. Disabled builds incur no calls or storage.
+#if defined(ESP_PLATFORM) && defined(ENABLE_REMOTE_PRESENCE) && defined(ENABLE_RELAY_DIAGNOSTICS)
+void remote_device_trace(uint8_t kind, uint8_t code, uint16_t value);
+#else
+static inline void remote_device_trace(uint8_t kind, uint8_t code, uint16_t value) { (void)kind; (void)code; (void)value; }
+#endif
+
 #if defined(ESP_PLATFORM) && defined(ENABLE_REMOTE_PRESENCE)
 void remote_presence_init(void);
 void remote_presence_service(void);

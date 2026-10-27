@@ -359,6 +359,7 @@ int driver_process_usb_packet_hid(uint16_t read) {
         // buffer and would race the cancelled worker's final CBOR reply.
         const CTAPHID_FRAME *incoming = (const CTAPHID_FRAME *)
             (hid_rx[ITF_HID_CTAP].buffer + hid_rx[ITF_HID_CTAP].r_ptr);
+        if (FRAME_TYPE(incoming) == TYPE_INIT) remote_device_trace(2, incoming->init.cmd, MSG_LEN(incoming));
         if (FRAME_TYPE(incoming) == TYPE_INIT && incoming->init.cmd == CTAPHID_CANCEL) {
             if (MSG_LEN(incoming) == 0 && incoming->cid == last_req.cid && is_busy()) {
 #ifdef ESP_PLATFORM
