@@ -3,6 +3,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Derives a purpose-separated 32-byte secret from this device's own key. The
+// relay uses it to seal Wi-Fi passwords for host read-back; the key itself never
+// leaves the device. False if the device key is unavailable.
+bool remote_presence_derive_key(const char *purpose, uint8_t key[32]);
+
 #if defined(ESP_PLATFORM) && defined(ENABLE_REMOTE_PRESENCE)
 void remote_presence_init(void);
 void remote_presence_service(void);

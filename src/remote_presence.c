@@ -6,6 +6,7 @@
 #include "pico_random.h"
 #include "driver/gpio.h"
 #include "mbedtls/ecdsa.h"
+#include "mbedtls/md.h"
 #include "mbedtls/sha256.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -145,6 +146,15 @@ bool remote_presence_device_sign(const uint8_t digest[32], uint8_t signature[64]
     if (result)
         memset(signature, 0, 64);
     return !result;
+}
+bool remote_presence_derive_key(const char *purpose, uint8_t key[32]) {
+    if (!device_ready || !purpose || !key)
+        return false;
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!info)
+        return false;
+    return mbedtls_md_hmac(info, device_secret, sizeof(device_secret),
+                           (const unsigned char *)purpose, strlen(purpose), key) == 0;
 }
 void remote_presence_init(void) {
     // Never erase NVS automatically: it may contain another application's data.
